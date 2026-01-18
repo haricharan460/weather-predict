@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Global Weather ML Predictor</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+:root{
+--bg:#0e1117;--card:#161b22;--surface:#0b0f14;
+--text:#e6edf3;--muted:#9aa4b2;--accent:#4f8cff;
+}
+*{box-sizing:border-box;font-family:Inter,system-ui}
+body{
+margin:0;min-height:100vh;
+background:radial-gradient(1200px 600px at top,#111827,#0e1117);
+display:flex;justify-content:center;align-items:center;color:var(--text)
+}
+.app{
+max-width:1000px;width:100%;
+background:var(--card);
+padding:28px;border-radius:18px;
+box-shadow:0 20px 60px rgba(0,0,0,.6)
+}
+h1{font-size:22px;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.section{background:var(--surface);padding:18px;border-radius:14px}
+label{font-size:12px;color:var(--muted);margin-top:10px;display:block}
+input,select{
+width:100%;padding:10px;margin-top:4px;
+border-radius:10px;border:none;
+background:#020409;color:var(--text)
+}
+button{
+margin-top:22px;width:100%;
+padding:14px;border-radius:14px;border:none;
+background:linear-gradient(135deg,var(--accent),#6aa4ff);
+color:#fff;font-weight:500;cursor:pointer
+}
+.summary{
+margin-top:22px;padding:16px;
+background:var(--surface);
+border-radius:14px;font-size:14px;line-height:1.6
+}
+canvas{margin-top:22px}
+</style>
+</head>
+
+<body>
+<div class="app">
+<h1>🌦️ Global Weather ML Predictor</h1>
+
+<div class="grid">
+<div class="section">
+<h3>Historical Reference</h3>
+
+<label>Country</label>
+<select id="countrySelect">
+<option value="">Select country</option>
+<option value="IN">India</option>
+<option value="US">United States</option>
+<option value="GB">United Kingdom</option>
+<option value="CA">Canada</option>
+<option value="AU">Australia</option>
+</select>
+
+<label>City (type to search)</label>
+<input id="cityInput" placeholder="Start typing city name">
+<select id="cityResults" size="5" style="margin-top:6px;display:none"></select>
+
+<label>Reference Date</label>
+<input type="date" id="baseDate">
+</div>
+
+<div class="section">
+<h3>Prediction Target</h3>
+
+<label>Predict For Date (≤ 2 years)</label>
+<input type="date" id="targetDate">
+
+<label>Predicted Avg Temperature (°C)</label>
+<input id="predTemp" disabled>
+
+<label>Chance of Rainfall</label>
+<input id="rainChance" disabled>
+
+<label>Extreme Weather Probability</label>
+<input id="extreme" disabled>
+</div>
+</div>
+
+<button id="runBtn">Run Prediction</button>
+
+<canvas id="chart" height="120"></canvas>
+
+<div id="summary" class="summary">
+Prediction summary will appear here…
+</div>
+</div>
+
+<script>
+const countrySelect = document.getElementById("countrySelect");
+const cityInput = document.getElementById("cityInput");
+const cityResults = document.getElementById("cityResults");
+const baseDate = document.getElementById("baseDate");
+const targetDate = document.getElementById("targetDate");
+const predTemp = document.getElementById("predTemp");
+const rainChance = document.getElementById("rainChance");
+const extreme = document.getElementById("extreme");
+const summary = document.getElementById("summary");
+const runBtn = document.getElementById("runBtn");
+const chartCanvas = document.getElementById("chart");
+
+let selectedCity = null;
+let tempChart = null;
+
+// 🔍 City search
+cityInput.addEventListener("input", async () => {
+    const q = cityInput.value.trim();
+    const country = countrySelect.value;
+
+    if (q.length < 2 || !country) {
+        cityResults.style.display = "none";
+        return;
+    }
+
+    const res = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&country=${country}&count=5`
+    );
+    const data = await res.json();
+
+    cityResults.innerHTML = "";
+    if (!data.results) return;
+
+    data.results.forEach(c => {
+        const opt = document.createElement("option");
+        opt.textContent = `${c.name}, ${c.admin1 || ""}`;
+        opt.value = JSON.stringify(c);
+        cityResults.appendChild(opt);
+    });
+
+    cityResults.style.display = "block";
+});
+
+// ✅ Select city
+cityResults.addEventListener("change", () => {
+    selectedCity = JSON.parse(cityResults.value);
+    cityInput.value = selectedCity.name;
+    cityResults.style.display = "none";
+});
+
+// ▶ Run prediction
+runBtn.onclick = async () => {
+try{
+if (!selectedCity || !baseDate.value || !targetDate.value) {
+    alert("Select city and dates");
+    return;
+}
+
+const base = new Date(baseDate.value + "T00:00:00");
+const target = new Date(targetDate.value + "T00:00:00");
+
+const diff = (target - base) / (1000 * 60 * 60 * 24);
+if (diff < 0 || diff > 730) {
+    alert("Prediction date must be within 2 years");
+    return;
+}
+
+const { latitude, longitude, name, country } = selectedCity;
+const month = target.getMonth() + 1;
+const day = target.getDate();
+
+let years = [], temps = [], rainyDays = 0;
+
+for (let y = base.getFullYear() - 10; y <= base.getFullYear(); y++) {
+    const d = `${y}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+    const res = await fetch(
+        `https://archive-api.open-meteo.com/v1/archive?latitude=${latitude}&longitude=${longitude}&start_date=${d}&end_date=${d}&daily=temperature_2m_mean,precipitation_sum`
+    );
+    const data = await res.json();
+    const t = data?.daily?.temperature_2m_mean?.[0];
+    const r = data?.daily?.precipitation_sum?.[0];
+    if (typeof t === "number") {
+        years.push(y);
+        temps.push(t);
+        if (r > 1) rainyDays++;
+    }
+}
+
+// ML regression
+const n = years.length;
+let sx=0,sy=0,sxy=0,sx2=0;
+for(let i=0;i<n;i++){
+sx+=years[i]; sy+=temps[i];
+sxy+=years[i]*temps[i];
+sx2+=years[i]*years[i];
+}
+const slope=(n*sxy-sx*sy)/(n*sx2-sx*sx);
+const intercept=(sy-slope*sx)/n;
+const pred = (slope*target.getFullYear()+intercept).toFixed(1);
+predTemp.value = pred;
+
+rainChance.value = Math.round((rainyDays/n)*100)+"%";
+
+const avg = temps.reduce((a,b)=>a+b,0)/n;
+const std = Math.sqrt(temps.map(t=>(t-avg)**2).reduce((a,b)=>a+b)/n);
+extreme.value = Math.min(Math.round((Math.abs(pred-avg)/std)*15),90)+"%";
+
+if (tempChart) tempChart.destroy();
+tempChart = new Chart(chartCanvas,{
+type:"line",
+data:{labels:years,datasets:[{data:temps,borderColor:"#4f8cff",tension:.3}]},
+options:{plugins:{legend:{display:false}}}
+});
+
+summary.innerText =
+`For ${name}, ${country}, on ${target.toLocaleDateString("en-GB")}, the model predicts an average temperature of ${pred}°C. Rainfall chance is ${rainChance.value}, with an extreme weather probability of ${extreme.value}.`;
+
+}catch(err){
+console.error(err);
+alert("Error occurred. Check console.");
+}
+};
+</script>
+</body>
+</html>
